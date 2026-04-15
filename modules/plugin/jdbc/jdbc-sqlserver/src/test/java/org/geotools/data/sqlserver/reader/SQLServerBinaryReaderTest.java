@@ -19,6 +19,28 @@ import org.locationtech.jts.io.WKTReader;
 public class SQLServerBinaryReaderTest {
 
     @Test
+    public void testGeographyPoint() throws Exception {
+        // POINT (Longitude=10 Latitude=5) in geography
+        // SQL Server binary for geography stores (Lat, Lon) -> (5, 10)
+        // SRID 4326 (E6100000)
+        // 01 (Version 1)
+        // 0C (Serialization Properties: Valid, Single Point)
+        // 0000000000001440 (5.0)
+        // 0000000000002440 (10.0)
+        String geographyPointBinary = "E6100000010C00000000000014400000000000002440";
+        String expectedWKT = "POINT (10 5)";
+
+        byte[] bytes = WKBReader.hexToBytes(geographyPointBinary);
+        SqlServerBinaryReader reader = new SqlServerBinaryReader();
+        Geometry geometryFromBinary = reader.read(bytes, true); // true for geography
+
+        WKTReader readerWkt = new WKTReader(new GeometryFactory(new PrecisionModel(), 4326));
+        Geometry geometryFromWkt = readerWkt.read(expectedWKT);
+
+        Assert.assertEquals(geometryFromWkt, geometryFromBinary);
+    }
+
+    @Test
     public void testPoint() throws Exception {
         String geometryPointWKT = "POINT (5 10)";
         String geometryPointBinary = "E6100000010C00000000000014400000000000002440";

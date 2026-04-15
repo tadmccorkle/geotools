@@ -36,12 +36,21 @@ import org.geotools.api.filter.spatial.Overlaps;
 import org.geotools.api.filter.spatial.Touches;
 import org.geotools.api.filter.spatial.Within;
 import org.geotools.data.jdbc.FilterToSQL;
+import org.geotools.data.util.DistanceBufferUtil;
 import org.geotools.filter.FilterCapabilities;
+import org.geotools.geometry.jts.JTS;
+import org.geotools.jdbc.JDBCDataStore;
 import org.geotools.jdbc.SQLDialect;
+import org.locationtech.jts.algorithm.Orientation;
+import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.LinearRing;
+import org.locationtech.jts.geom.MultiPolygon;
+import org.locationtech.jts.geom.Polygon;
 
 public class SQLServerFilterToSQL extends FilterToSQL {
+
+    private static final Envelope WORLD = new Envelope(-180, 180, -90, 90);
 
     @Override
     protected FilterCapabilities createFilterCapabilities() {
@@ -68,7 +77,53 @@ public class SQLServerFilterToSQL extends FilterToSQL {
             // WKT does not support linear rings
             g = g.getFactory().createLineString(ring.getCoordinateSequence());
         }
-        out.write("geometry::STGeomFromText('" + g.toText() + "', " + currentSRID + ")");
+
+        boolean geography = isCurrentGeography();
+        String prefix = geography ? "geography" : "geometry";
+        if (geography) {
+            g = clipToWorld(g);
+            g = forceCCW(g);
+        }
+
+        int srid = currentSRID != null ? currentSRID : (geography ? 4326 : 0);
+        out.write(prefix + "::STGeomFromText('" + g.toText() + "', " + srid + ")");
+    }
+
+    private Geometry forceCCW(Geometry g) {
+        if (g == null) return null;
+        if (g instanceof Polygon poly) {
+            if (!Orientation.isCCW(poly.getExteriorRing().getCoordinates())) {
+                return g.reverse();
+            }
+        } else if (g instanceof MultiPolygon mp) {
+            if (mp.getNumGeometries() > 0) {
+                Polygon p1 = (Polygon) mp.getGeometryN(0);
+                if (!Orientation.isCCW(p1.getExteriorRing().getCoordinates())) {
+                    return g.reverse();
+                }
+            }
+        }
+        return g;
+    }
+
+    private Geometry clipToWorld(Geometry g) {
+        if (g == null) return null;
+        Envelope env = g.getEnvelopeInternal();
+        if (!WORLD.contains(env)) {
+            return g.intersection(JTS.toGeometry(WORLD));
+        }
+        return g;
+    }
+
+    private boolean isCurrentGeography() {
+        if (currentGeometry == null) return false;
+        Object nativeType = currentGeometry.getUserData().get(JDBCDataStore.JDBC_NATIVE_TYPENAME);
+        if ("geography".equals(nativeType)) return true;
+        if ("geometry".equals(nativeType)) return false;
+
+        // Fallback for SQL Views if native type is not set: check SRID
+        Integer srid = (Integer) currentGeometry.getUserData().get(JDBCDataStore.JDBC_NATIVE_SRID);
+        return srid != null && srid == 4326;
     }
 
     @Override
@@ -105,6 +160,11 @@ public class SQLServerFilterToSQL extends FilterToSQL {
             }
 
             if (filter instanceof DistanceBufferOperator operator) {
+                double distance = operator.getDistance();
+                if (isCurrentGeography()) {
+                    distance = DistanceBufferUtil.getDistanceInMeters(operator);
+                }
+
                 e1.accept(this, extraData);
                 out.write(".STDistance(");
                 e2.accept(this, extraData);
@@ -118,7 +178,7 @@ public class SQLServerFilterToSQL extends FilterToSQL {
                     throw new RuntimeException("Unknown distance operator.");
                 }
 
-                out.write(Double.toString(operator.getDistance()));
+                out.write(Double.toString(distance));
             } else {
 
                 if (swapped) {

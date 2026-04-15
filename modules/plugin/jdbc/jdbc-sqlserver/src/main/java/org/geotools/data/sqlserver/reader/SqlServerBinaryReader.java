@@ -71,11 +71,19 @@ public class SqlServerBinaryReader {
     }
 
     public Geometry read(byte[] bytes) throws IOException {
+        return read(bytes, false);
+    }
+
+    public Geometry read(byte[] bytes, boolean geography) throws IOException {
         this.binary = new SqlServerBinary();
+        this.binary.setGeography(geography);
         return read(new ByteArrayInStream(bytes));
     }
 
     public Geometry read(InStream is) throws IOException {
+        if (this.binary == null) {
+            this.binary = new SqlServerBinary();
+        }
         try {
             parse(is);
         } catch (ParseException e) {
@@ -423,6 +431,12 @@ public class SqlServerBinaryReader {
     }
 
     private Coordinate readCoordinate() throws IOException, ParseException {
-        return new Coordinate(dis.readDouble(), dis.readDouble());
+        double y = dis.readDouble();
+        double x = dis.readDouble();
+        if (binary.isGeography()) {
+            return new Coordinate(x, y);
+        } else {
+            return new Coordinate(y, x);
+        }
     }
 }

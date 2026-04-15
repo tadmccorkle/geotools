@@ -56,12 +56,22 @@ class SqlServerBinary {
     private Segment[] segments;
     private CoordinateSequence[][] sequences;
 
+    private boolean geography;
+
     public int getSrid() {
         return srid;
     }
 
     public void setSrid(int srid) {
         this.srid = srid;
+    }
+
+    public boolean isGeography() {
+        return geography;
+    }
+
+    public void setGeography(boolean geography) {
+        this.geography = geography;
     }
 
     public void setSerializationProperties(byte serializationProperties) {

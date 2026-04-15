@@ -162,6 +162,7 @@ public class SQLServerDialect extends BasicSQLDialect {
         super.registerSqlTypeNameToClassMappings(mappings);
 
         mappings.put("geometry", Geometry.class);
+        mappings.put("geography", Geometry.class);
         mappings.put("uniqueidentifier", UUID.class);
         mappings.put("time", Time.class);
         mappings.put("date", Date.class);
@@ -287,9 +288,12 @@ public class SQLServerDialect extends BasicSQLDialect {
                         }
                     }
 
-                    if (bbox == null) {
-                        // no crs or could not figure out bounds
-                        continue;
+                    if (bbox == null || isGeography(gd)) {
+                        // no crs or could not figure out bounds, or geography (which doesn't use
+                        // bounding box)
+                        if (bbox == null) {
+                            continue;
+                        }
                     }
                     StringBuffer sql = new StringBuffer("CREATE SPATIAL INDEX ");
                     encodeTableName(featureType.getTypeName() + "_" + gd.getLocalName() + "_index", sql);
@@ -298,7 +302,9 @@ public class SQLServerDialect extends BasicSQLDialect {
                     sql.append("(");
                     encodeColumnName(null, gd.getLocalName(), sql);
                     sql.append(")");
-                    sql.append(" WITH ( BOUNDING_BOX = ").append(bbox).append(")");
+                    if (!isGeography(gd)) {
+                        sql.append(" WITH ( BOUNDING_BOX = ").append(bbox).append(")");
+                    }
 
                     LOGGER.fine(sql.toString());
                     st.execute(sql.toString());
@@ -320,6 +326,8 @@ public class SQLServerDialect extends BasicSQLDialect {
         String gType = null;
         if ("geometry".equalsIgnoreCase(typeName) && geometryMetadataTable != null) {
             gType = lookupGeometryType(columnMetaData, cx, geometryMetadataTable, "f_geometry_column");
+        } else if ("geography".equalsIgnoreCase(typeName)) {
+            return Geometry.class;
         } else {
             return null;
         }
@@ -554,7 +562,16 @@ public class SQLServerDialect extends BasicSQLDialect {
         value.apply(finder);
         WKTWriter writer = new WKTWriter2(finder.hasZ() ? 3 : 2);
         String wkt = writer.write(value);
-        sql.append("geometry::STGeomFromText('")
+
+        // heuristic: if srid is 4326, it's likely geography.
+        // Better: use a thread local to store the current native type name if available.
+        String prefix = "geometry";
+        if (srid == 4326) {
+            prefix = "geography";
+        }
+
+        sql.append(prefix)
+                .append("::STGeomFromText('")
                 .append(wkt)
                 .append("',")
                 .append(srid)
@@ -576,7 +593,8 @@ public class SQLServerDialect extends BasicSQLDialect {
         }
         if (useNativeSerialization) {
             try {
-                return new SqlServerBinaryReader(factory).read(bytes);
+                boolean geography = isGeography(descriptor, rs, column);
+                return new SqlServerBinaryReader(factory).read(bytes, geography);
             } catch (IOException e) {
                 throw (IOException) new IOException().initCause(e);
             }
@@ -587,6 +605,41 @@ public class SQLServerDialect extends BasicSQLDialect {
                 throw (IOException) new IOException().initCause(e);
             }
         }
+    }
+
+    private boolean isGeography(GeometryDescriptor descriptor, ResultSet rs, String column) throws SQLException {
+        Object nativeType =
+                descriptor != null ? descriptor.getUserData().get(JDBCDataStore.JDBC_NATIVE_TYPENAME) : null;
+        if ("geography".equals(nativeType)) {
+            return true;
+        }
+        if ("geometry".equals(nativeType)) {
+            return false;
+        }
+
+        // Fallback for SQL Views: check driver reported type name
+        try {
+            String typeName = rs.getMetaData().getColumnTypeName(rs.findColumn(column));
+            if ("geography".equalsIgnoreCase(typeName)) {
+                return true;
+            }
+            if ("geometry".equalsIgnoreCase(typeName)) {
+                return false;
+            }
+        } catch (Exception e) {
+            // ignore
+        }
+        // Final fallback: heuristic based on SRID
+        if (descriptor != null) {
+            Integer srid = (Integer) descriptor.getUserData().get(JDBCDataStore.JDBC_NATIVE_SRID);
+            return srid != null && srid == 4326;
+        }
+        return false;
+    }
+
+    private boolean isGeography(GeometryDescriptor descriptor) {
+        return descriptor != null
+                && "geography".equals(descriptor.getUserData().get(JDBCDataStore.JDBC_NATIVE_TYPENAME));
     }
 
     Geometry decodeGeometry(String s, GeometryFactory factory) throws IOException {
@@ -629,8 +682,9 @@ public class SQLServerDialect extends BasicSQLDialect {
 
         sql.append(" + ':' + ");
 
+        sql.append("CAST(");
         encodeColumnName(null, geometryColumn, sql);
-        sql.append(".STEnvelope().ToString()");
+        sql.append(" AS GEOMETRY).STEnvelope().ToString()");
     }
 
     @Override
