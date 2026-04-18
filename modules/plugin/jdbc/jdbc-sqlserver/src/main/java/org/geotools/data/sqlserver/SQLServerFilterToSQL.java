@@ -44,6 +44,8 @@ import org.geotools.jdbc.SQLDialect;
 import org.locationtech.jts.algorithm.Orientation;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.geom.GeometryCollection;
+import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.LinearRing;
 import org.locationtech.jts.geom.MultiPolygon;
 import org.locationtech.jts.geom.Polygon;
@@ -92,20 +94,44 @@ public class SQLServerFilterToSQL extends FilterToSQL {
     private Geometry forceCCW(Geometry g) {
         if (g == null) return null;
         if (g instanceof Polygon poly) {
-            if (!Orientation.isCCW(poly.getExteriorRing().getCoordinates())) {
-                return g.reverse();
-            }
+            return normalizePolygon(poly);
         } else if (g instanceof MultiPolygon mp) {
-            if (mp.getNumGeometries() > 0) {
-                Polygon p1 = (Polygon) mp.getGeometryN(0);
-                if (!Orientation.isCCW(p1.getExteriorRing().getCoordinates())) {
-                    return g.reverse();
-                }
+            Polygon[] polys = new Polygon[mp.getNumGeometries()];
+            for (int i = 0; i < mp.getNumGeometries(); i++) {
+                polys[i] = normalizePolygon((Polygon) mp.getGeometryN(i));
             }
+            return g.getFactory().createMultiPolygon(polys);
+        } else if (g instanceof GeometryCollection gc) {
+            Geometry[] geoms = new Geometry[gc.getNumGeometries()];
+            for (int i = 0; i < gc.getNumGeometries(); i++) {
+                geoms[i] = forceCCW(gc.getGeometryN(i));
+            }
+            return g.getFactory().createGeometryCollection(geoms);
         }
         return g;
     }
 
+    private Polygon normalizePolygon(Polygon poly) {
+        GeometryFactory gf = poly.getFactory();
+        LinearRing shell = orientRing(poly.getExteriorRing(), true);
+        LinearRing[] holes = new LinearRing[poly.getNumInteriorRing()];
+        for (int i = 0; i < poly.getNumInteriorRing(); i++) {
+            holes[i] = orientRing(poly.getInteriorRingN(i), false);
+        }
+        return gf.createPolygon(shell, holes);
+    }
+
+    private LinearRing orientRing(LinearRing ring, boolean ccw) {
+        if (Orientation.isCCW(ring.getCoordinates()) != ccw) {
+            return ring.reverse();
+        }
+        return ring;
+    }
+
+    // Clips geometry to the valid world envelope for geography literals.
+    // Adequate for typical GeoServer BBOX tile filters (small rectangles within world bounds).
+    // TODO: antimeridian-crossing or pole-adjacent filters may need PostGIS-style
+    //  90x90 degree subdivision (see FilterToSqlHelper.clipToWorld in jdbc-postgis).
     private Geometry clipToWorld(Geometry g) {
         if (g == null) return null;
         Envelope env = g.getEnvelopeInternal();
@@ -118,12 +144,7 @@ public class SQLServerFilterToSQL extends FilterToSQL {
     private boolean isCurrentGeography() {
         if (currentGeometry == null) return false;
         Object nativeType = currentGeometry.getUserData().get(JDBCDataStore.JDBC_NATIVE_TYPENAME);
-        if ("geography".equals(nativeType)) return true;
-        if ("geometry".equals(nativeType)) return false;
-
-        // Fallback for SQL Views if native type is not set: check SRID
-        Integer srid = (Integer) currentGeometry.getUserData().get(JDBCDataStore.JDBC_NATIVE_SRID);
-        return srid != null && srid == 4326;
+        return "geography".equals(nativeType);
     }
 
     @Override
@@ -190,6 +211,10 @@ public class SQLServerFilterToSQL extends FilterToSQL {
                 if (filter instanceof Contains) {
                     out.write(".STContains(");
                 } else if (filter instanceof Crosses) {
+                    if (isCurrentGeography()) {
+                        throw new UnsupportedOperationException(
+                                "SQL Server GEOGRAPHY does not support STCrosses. Use Intersects instead.");
+                    }
                     out.write(".STCrosses(");
                 } else if (filter instanceof Disjoint) {
                     out.write(".STDisjoint(");
@@ -200,6 +225,10 @@ public class SQLServerFilterToSQL extends FilterToSQL {
                 } else if (filter instanceof Overlaps) {
                     out.write(".STOverlaps(");
                 } else if (filter instanceof Touches) {
+                    if (isCurrentGeography()) {
+                        throw new UnsupportedOperationException(
+                                "SQL Server GEOGRAPHY does not support STTouches. Use STDistance or Intersects instead.");
+                    }
                     out.write(".STTouches(");
                 } else if (filter instanceof Within) {
                     out.write(".STWithin(");

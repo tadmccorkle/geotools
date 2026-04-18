@@ -324,9 +324,10 @@ public class SQLServerDialect extends BasicSQLDialect {
         String typeName = columnMetaData.getString("TYPE_NAME");
 
         String gType = null;
-        if ("geometry".equalsIgnoreCase(typeName) && geometryMetadataTable != null) {
+        if (("geometry".equalsIgnoreCase(typeName) || "geography".equalsIgnoreCase(typeName))
+                && geometryMetadataTable != null) {
             gType = lookupGeometryType(columnMetaData, cx, geometryMetadataTable, "f_geometry_column");
-        } else if ("geography".equalsIgnoreCase(typeName)) {
+        } else if ("geometry".equalsIgnoreCase(typeName) || "geography".equalsIgnoreCase(typeName)) {
             return Geometry.class;
         } else {
             return null;
@@ -563,15 +564,7 @@ public class SQLServerDialect extends BasicSQLDialect {
         WKTWriter writer = new WKTWriter2(finder.hasZ() ? 3 : 2);
         String wkt = writer.write(value);
 
-        // heuristic: if srid is 4326, it's likely geography.
-        // Better: use a thread local to store the current native type name if available.
-        String prefix = "geometry";
-        if (srid == 4326) {
-            prefix = "geography";
-        }
-
-        sql.append(prefix)
-                .append("::STGeomFromText('")
+        sql.append("geometry::STGeomFromText('")
                 .append(wkt)
                 .append("',")
                 .append(srid)
@@ -629,11 +622,6 @@ public class SQLServerDialect extends BasicSQLDialect {
         } catch (Exception e) {
             // ignore
         }
-        // Final fallback: heuristic based on SRID
-        if (descriptor != null) {
-            Integer srid = (Integer) descriptor.getUserData().get(JDBCDataStore.JDBC_NATIVE_SRID);
-            return srid != null && srid == 4326;
-        }
         return false;
     }
 
@@ -682,9 +670,11 @@ public class SQLServerDialect extends BasicSQLDialect {
 
         sql.append(" + ':' + ");
 
-        sql.append("CAST(");
+        sql.append("geometry::STGeomFromWKB(");
         encodeColumnName(null, geometryColumn, sql);
-        sql.append(" AS GEOMETRY).STEnvelope().ToString()");
+        sql.append(".STAsBinary(), ");
+        encodeColumnName(null, geometryColumn, sql);
+        sql.append(".STSrid).STEnvelope().ToString()");
     }
 
     @Override
@@ -1072,19 +1062,25 @@ public class SQLServerDialect extends BasicSQLDialect {
             return null;
         }
 
-        // note that this will only work for geometry type indexes
-        // and not for geography type indexes
         final List<ReferencedEnvelope> result = new ArrayList<>();
 
         featureType.getAttributeDescriptors().stream()
                 .filter(attributeDescriptor -> attributeDescriptor instanceof GeometryDescriptor)
                 .forEach(attributeDescriptor -> {
+                    GeometryDescriptor gd = (GeometryDescriptor) attributeDescriptor;
+                    // Geography indexes don't store bounding box metadata in
+                    // sys.spatial_index_tessellations; skip and let framework use
+                    // unoptimized bounds.
+                    if (isGeography(gd)) {
+                        result.add(null);
+                        return;
+                    }
                     try {
                         result.add(getIndexBounds(
                                 schema,
                                 featureType.getTypeName(),
-                                attributeDescriptor.getLocalName(),
-                                featureType.getGeometryDescriptor().getCoordinateReferenceSystem(),
+                                gd.getLocalName(),
+                                gd.getCoordinateReferenceSystem(),
                                 cx));
                     } catch (SQLException e) {
                         LOGGER.log(

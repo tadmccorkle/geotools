@@ -431,12 +431,14 @@ public class SqlServerBinaryReader {
     }
 
     private Coordinate readCoordinate() throws IOException, ParseException {
-        double y = dis.readDouble();
-        double x = dis.readDouble();
+        double first = dis.readDouble();
+        double second = dis.readDouble();
         if (binary.isGeography()) {
-            return new Coordinate(x, y);
+            // Geography: first=Latitude(Y), second=Longitude(X) → JTS Coordinate(X, Y)
+            return new Coordinate(second, first);
         } else {
-            return new Coordinate(y, x);
+            // Geometry: first=X, second=Y → JTS Coordinate(X, Y)
+            return new Coordinate(first, second);
         }
     }
 }
