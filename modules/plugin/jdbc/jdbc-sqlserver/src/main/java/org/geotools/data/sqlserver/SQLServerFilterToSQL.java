@@ -87,7 +87,7 @@ public class SQLServerFilterToSQL extends FilterToSQL {
             g = forceCCW(g);
         }
 
-        int srid = currentSRID != null ? currentSRID : (geography ? 4326 : 0);
+        int srid = currentSRID != null ? currentSRID : 0;
         out.write(prefix + "::STGeomFromText('" + g.toText() + "', " + srid + ")");
     }
 
@@ -101,7 +101,8 @@ public class SQLServerFilterToSQL extends FilterToSQL {
                 polys[i] = normalizePolygon((Polygon) mp.getGeometryN(i));
             }
             return g.getFactory().createMultiPolygon(polys);
-        } else if (g instanceof GeometryCollection gc) {
+        } else if (g.getClass() == GeometryCollection.class) {
+            GeometryCollection gc = (GeometryCollection) g;
             Geometry[] geoms = new Geometry[gc.getNumGeometries()];
             for (int i = 0; i < gc.getNumGeometries(); i++) {
                 geoms[i] = forceCCW(gc.getGeometryN(i));
@@ -162,6 +163,18 @@ public class SQLServerFilterToSQL extends FilterToSQL {
     protected Object visitBinarySpatialOperator(
             BinarySpatialOperator filter, Expression e1, Expression e2, boolean swapped, Object extraData) {
 
+        // Check for unsupported geography operators before writing any SQL
+        if (isCurrentGeography()) {
+            if (filter instanceof Crosses) {
+                throw new UnsupportedOperationException(
+                        "SQL Server GEOGRAPHY does not support STCrosses. Use Intersects instead.");
+            }
+            if (filter instanceof Touches) {
+                throw new UnsupportedOperationException(
+                        "SQL Server GEOGRAPHY does not support STTouches. Use STDistance or Intersects instead.");
+            }
+        }
+
         try {
             // if the filter is not disjoint, and it with a BBOX filter
             if (!(filter instanceof Disjoint) && !(filter instanceof DistanceBufferOperator)) {
@@ -211,10 +224,6 @@ public class SQLServerFilterToSQL extends FilterToSQL {
                 if (filter instanceof Contains) {
                     out.write(".STContains(");
                 } else if (filter instanceof Crosses) {
-                    if (isCurrentGeography()) {
-                        throw new UnsupportedOperationException(
-                                "SQL Server GEOGRAPHY does not support STCrosses. Use Intersects instead.");
-                    }
                     out.write(".STCrosses(");
                 } else if (filter instanceof Disjoint) {
                     out.write(".STDisjoint(");
@@ -225,10 +234,6 @@ public class SQLServerFilterToSQL extends FilterToSQL {
                 } else if (filter instanceof Overlaps) {
                     out.write(".STOverlaps(");
                 } else if (filter instanceof Touches) {
-                    if (isCurrentGeography()) {
-                        throw new UnsupportedOperationException(
-                                "SQL Server GEOGRAPHY does not support STTouches. Use STDistance or Intersects instead.");
-                    }
                     out.write(".STTouches(");
                 } else if (filter instanceof Within) {
                     out.write(".STWithin(");

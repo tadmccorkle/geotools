@@ -14,6 +14,7 @@ import org.geotools.factory.CommonFactoryFinder;
 import org.geotools.jdbc.JDBCDataStore;
 import org.junit.Before;
 import org.junit.Test;
+import org.locationtech.jts.algorithm.Orientation;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
@@ -42,14 +43,16 @@ public class SQLServerFilterToSQLTest {
 
     @Test
     public void testGeographyLiteralUsesCCWShell() throws Exception {
-        // CW shell (should be reversed to CCW)
+        // CW shell: (0,0) → (0,10) → (10,10) → (10,0) → (0,0) — should be reversed to CCW
         Coordinate[] cwShell = new Coordinate[] {
             new Coordinate(0, 0),
-            new Coordinate(10, 0),
-            new Coordinate(10, 10),
             new Coordinate(0, 10),
+            new Coordinate(10, 10),
+            new Coordinate(10, 0),
             new Coordinate(0, 0)
         };
+        // Verify this is actually CW before we test
+        assertTrue("Test input must be CW", !Orientation.isCCW(cwShell));
         Polygon cwPoly = gf.createPolygon(cwShell);
 
         SQLServerFilterToSQL filterToSQL = new SQLServerFilterToSQL();
@@ -71,24 +74,25 @@ public class SQLServerFilterToSQLTest {
         Polygon resultPoly = (Polygon) parsed;
         assertTrue(
                 "Shell should be CCW",
-                org.locationtech.jts.algorithm.Orientation.isCCW(
-                        resultPoly.getExteriorRing().getCoordinates()));
+                Orientation.isCCW(resultPoly.getExteriorRing().getCoordinates()));
     }
 
     @Test
     public void testGeographyLiteralEnforcesCWHoles() throws Exception {
-        // CCW shell (correct)
+        // CCW shell (correct for geography exterior ring)
         Coordinate[] shell = new Coordinate[] {
             new Coordinate(0, 0),
-            new Coordinate(0, 10),
-            new Coordinate(10, 10),
             new Coordinate(10, 0),
+            new Coordinate(10, 10),
+            new Coordinate(0, 10),
             new Coordinate(0, 0)
         };
-        // CCW hole (wrong for geography — should be reversed to CW)
+        assertTrue("Shell must be CCW", Orientation.isCCW(shell));
+        // CCW hole (wrong for geography — holes should be CW, so this should be reversed)
         Coordinate[] ccwHole = new Coordinate[] {
-            new Coordinate(2, 2), new Coordinate(2, 8), new Coordinate(8, 8), new Coordinate(8, 2), new Coordinate(2, 2)
+            new Coordinate(2, 2), new Coordinate(8, 2), new Coordinate(8, 8), new Coordinate(2, 8), new Coordinate(2, 2)
         };
+        assertTrue("Hole input must be CCW", Orientation.isCCW(ccwHole));
         LinearRing shellRing = gf.createLinearRing(shell);
         LinearRing holeRing = gf.createLinearRing(ccwHole);
         Polygon poly = gf.createPolygon(shellRing, new LinearRing[] {holeRing});
@@ -110,12 +114,10 @@ public class SQLServerFilterToSQLTest {
 
         assertTrue(
                 "Shell should be CCW",
-                org.locationtech.jts.algorithm.Orientation.isCCW(
-                        resultPoly.getExteriorRing().getCoordinates()));
+                Orientation.isCCW(resultPoly.getExteriorRing().getCoordinates()));
         assertTrue(
                 "Hole should be CW",
-                !org.locationtech.jts.algorithm.Orientation.isCCW(
-                        resultPoly.getInteriorRingN(0).getCoordinates()));
+                !Orientation.isCCW(resultPoly.getInteriorRingN(0).getCoordinates()));
     }
 
     @Test

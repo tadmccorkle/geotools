@@ -93,6 +93,8 @@ public class SqlServerBinaryReader {
         Type type = getTypeFromBinary();
         Geometry geometry = decode(0, type);
         geometry.setSRID(binary.getSrid());
+        // Clear state so reader reuse doesn't leak geography flag
+        this.binary = null;
         return geometry;
     }
 
